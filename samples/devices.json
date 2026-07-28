@@ -1,0 +1,23 @@
+[
+  {
+    "name": "core-sw-01",
+    "primary_ip": "10.0.0.1",
+    "device_type": "Cisco Catalyst 9300",
+    "site": "DAL01",
+    "role": "core-switch",
+    "platform": "ios",
+    "serial": "FCW1234A0BC",
+    "status": "active",
+    "tags": ["prod", "core"]
+  },
+  {
+    "name": "core-sw-02",
+    "primary_ip": "10.0.0.2",
+    "device_type": "Arista 7280",
+    "site": "DAL01",
+    "role": "core-switch",
+    "platform": "eos",
+    "status": "active",
+    "tags": ["prod", "core"]
+  }
+]
