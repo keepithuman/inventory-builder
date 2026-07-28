@@ -34,10 +34,18 @@ decorators:
           type: string
           default: "false"
           description: >-
-            'true' to confirm the full-replace write. Otherwise the service returns
-            an added/removed/unchanged diff and action="confirmation_required"
-            and makes no changes -- re-invoke with yes=true once the diff has
-            been reviewed.
+            'true' to confirm the write (including creating the inventory, if
+            needed). Otherwise the service returns a read-only diff against the
+            actual current nodes plus would_create_inventory, action=
+            "confirmation_required", and makes NO changes at all -- re-invoke
+            with yes=true once the diff has been reviewed.
+        preview:
+          type: string
+          default: "false"
+          description: >-
+            'true' to force that same live, read-only diff and exit without
+            writing -- always wins over yes=true. Unlike dry_run (which never
+            contacts the platform), this authenticates and reads real state.
         include_backup:
           type: string
           default: "false"

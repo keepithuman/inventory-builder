@@ -35,15 +35,23 @@ Because every populate call replaces the entire inventory, a bad or
 truncated input (e.g. a partial export at 10k+ devices) silently wipes
 everything that was there before. Before writing, the script:
 
-  1. Fetches the current node list and computes an added/removed/unchanged
-     diff against the incoming set (included in the JSON result).
+  1. Checks (read-only) whether the target inventory exists yet and, if so,
+     fetches its current node list -- neither creating nor writing anything.
+     Computes an added/removed/unchanged diff against the incoming set, and
+     whether the run would create the inventory (would_create_inventory),
+     both included in the JSON result.
   2. Optionally backs up the current nodes to a local JSON file (--backup-to)
      and/or embeds them in the JSON result (--include-backup true).
-  3. Requires explicit confirmation before the replace (--yes true). Without
-     it: interactive local runs get a y/N prompt; non-interactive runs (IAG,
-     cron) get back a JSON result with action="confirmation_required" and the
-     diff, and make no changes -- the caller re-invokes with --yes true once
-     it has reviewed the diff.
+  3. Requires explicit confirmation before creating or writing anything
+     (--yes true). Without it: interactive local runs get a y/N prompt;
+     non-interactive runs (IAG, cron) get back a JSON result with
+     action="confirmation_required" and the diff, and make NO changes at all
+     -- not even creating the inventory -- the caller re-invokes with
+     --yes true once it has reviewed the diff.
+  4. --preview true asks for that same read-only diff explicitly, and always
+     wins over --yes true -- useful when you want a live look at actual
+     platform state (unlike --dry-run, which never touches the platform)
+     without any risk of also triggering a write in the same call.
 
 IAG5 CONTRACT
 ----------------
@@ -468,6 +476,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "instead of writing anything.",
     )
     p.add_argument(
+        "--preview",
+        default="false",
+        help="'true' to force a live, read-only preview (diff against the actual current nodes, "
+        "plus would_create_inventory) and exit without writing -- even if yes=true is also set. "
+        "Unlike dry_run, this authenticates and reads real platform state.",
+    )
+    p.add_argument(
         "--include_backup",
         default="false",
         help="'true' to embed the pre-replace node list in the JSON result (in addition to "
@@ -488,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     create_if_missing = _bool(args.create_if_missing)
     dry_run = _bool(args.dry_run)
     confirmed = _bool(args.yes)
+    explicit_preview = _bool(args.preview)
     include_backup = _bool(args.include_backup)
     groups = [g.strip() for g in args.groups.split(",") if g.strip()]
 
@@ -515,22 +531,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"success": False, "error": str(e)}))
         return 1
 
-    try:
-        ensure_inventory(
-            platform,
-            args.inventory_name,
-            create_if_missing=create_if_missing,
-            groups=groups,
-        )
-        existing_nodes = fetch_all_nodes(platform, args.inventory_name)
-    except ValueError as e:
-        print(json.dumps({"success": False, "error": str(e)}))
-        return 0
+    # Read-only: check existence and fetch current nodes, but never create or write
+    # anything yet. Whether the inventory would need to be created is itself part of
+    # what gets previewed/confirmed below.
+    existing = find_inventory(platform, args.inventory_name)
+    would_create_inventory = existing is None
+    existing_nodes = fetch_all_nodes(platform, args.inventory_name) if not would_create_inventory else []
 
     diff = build_diff(existing_nodes, nodes)
     log.warning(
-        "Planned change to '%s': existing=%d new=%d added=%d removed=%d unchanged=%d",
+        "Planned change to '%s': would_create=%s existing=%d new=%d added=%d removed=%d unchanged=%d",
         args.inventory_name,
+        would_create_inventory,
         diff["existing_count"],
         diff["new_count"],
         diff["added_count"],
@@ -541,11 +553,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.backup_to and existing_nodes:
         backup_nodes(existing_nodes, args.backup_to)
 
-    if not should_proceed(confirmed):
-        result: dict[str, Any] = {"success": False, "action": "confirmation_required", "diff": diff}
+    # preview=true always wins, even if yes=true was also passed: it's an explicit
+    # "show me, don't touch anything" request, not just a missing confirmation.
+    proceed = (not explicit_preview) and should_proceed(confirmed)
+
+    if not proceed:
+        result: dict[str, Any] = {
+            "success": False,
+            "action": "preview" if explicit_preview else "confirmation_required",
+            "would_create_inventory": would_create_inventory,
+            "diff": diff,
+        }
         if include_backup and existing_nodes:
             result["backup"] = existing_nodes
         print(json.dumps(result))
+        return 0
+
+    try:
+        ensure_inventory(
+            platform,
+            args.inventory_name,
+            create_if_missing=create_if_missing,
+            groups=groups,
+        )
+    except ValueError as e:
+        print(json.dumps({"success": False, "error": str(e)}))
         return 0
 
     stats = populate_inventory(platform, args.inventory_name, nodes)
@@ -554,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
         "success": not bool(stats.get("errors")),
         "action": "populated",
         "inventory_name": args.inventory_name,
+        "created_inventory": would_create_inventory,
         "diff": diff,
         "populate": stats,
     }

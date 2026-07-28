@@ -25,10 +25,17 @@ Runs two ways:
   in the JSON result, since the underlying API call is a **full replace, not
   an upsert** — every write clears the inventory first.
 - **Confirmation gate** (`yes`) — without it, the script returns the diff and
-  makes no changes (`action: "confirmation_required"`). Local interactive
+  makes **zero** changes — it doesn't populate, and it doesn't even create the
+  inventory if `create_if_missing=true` was also set (`action:
+  "confirmation_required"`, plus `would_create_inventory`). Local interactive
   runs get a y/N prompt instead; non-interactive callers (IAG, cron) always
   get the structured refusal, never a hang. This is the main guard against a
   bad or truncated input silently wiping a live inventory.
+- **Live preview** (`preview=true`) — the same read-only diff as above
+  (existing nodes, added/removed/unchanged, `would_create_inventory`), but
+  requested explicitly rather than implied by a missing `yes`, and it always
+  wins even if `yes=true` is also passed. Unlike `dry_run`, this authenticates
+  and reads the actual current platform state.
 - **Rollback backup** (`backup_to` / `include_backup`) — snapshots the
   inventory's pre-replace nodes to a local file and/or embeds them directly
   in the JSON result, so a bad run can be undone.
@@ -58,7 +65,8 @@ samples/devices.json                       — ready-to-use two-device input (se
 | `create_if_missing` | string (`"true"`/anything else) | no | `"false"` | Create the inventory if it doesn't exist. |
 | `groups` | string | no | `""` | Comma-separated group name(s) granted access when creating a new inventory (required if creating). |
 | `dry_run` | string (`"true"`/anything else) | no | `"false"` | Transform and validate only — no platform calls at all. |
-| `yes` | string (`"true"`/anything else) | no | `"false"` | Confirm the full-replace write. |
+| `yes` | string (`"true"`/anything else) | no | `"false"` | Confirm the write. Without it, nothing changes — not even inventory creation. |
+| `preview` | string (`"true"`/anything else) | no | `"false"` | Force the live read-only diff and exit without writing. Always wins over `yes=true`. |
 | `include_backup` | string (`"true"`/anything else) | no | `"false"` | Embed the pre-replace node list in the JSON result. |
 | `backup_to` | string (path) | no | — | Local-only: also write the pre-replace nodes to this file. |
 
@@ -133,13 +141,14 @@ script actually emits a single JSON line.
 }
 ```
 
-**Real run without `yes`** — the confirmation gate stops the write and
-reports what *would* happen:
+**Real run without `yes`** — the confirmation gate stops the write (and any
+inventory creation) and reports what *would* happen:
 
 ```json
 {
   "success": false,
   "action": "confirmation_required",
+  "would_create_inventory": false,
   "diff": {
     "existing_count": 2,
     "new_count": 2,
@@ -152,6 +161,26 @@ reports what *would* happen:
 }
 ```
 
+**`preview=true` against an inventory that doesn't exist yet** — same
+read-only shape, `action` distinguishes an explicit ask from an implied one:
+
+```json
+{
+  "success": false,
+  "action": "preview",
+  "would_create_inventory": true,
+  "diff": {
+    "existing_count": 0,
+    "new_count": 1,
+    "added_count": 1,
+    "removed_count": 0,
+    "unchanged_count": 0,
+    "added_preview": ["ghost-sw"],
+    "removed_preview": []
+  }
+}
+```
+
 **Real run with `yes=true` and `include_backup=true`**:
 
 ```json
@@ -159,6 +188,7 @@ reports what *would* happen:
   "success": true,
   "action": "populated",
   "inventory_name": "Test-Inventory",
+  "created_inventory": false,
   "diff": {
     "existing_count": 2,
     "new_count": 2,
