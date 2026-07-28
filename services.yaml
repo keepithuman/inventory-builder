@@ -20,32 +20,28 @@ decorators:
           description: "Target Inventory Manager inventory name."
         create_if_missing:
           type: string
-          enum: ["true", "false"]
           default: "false"
-          description: "Create the inventory if it doesn't already exist."
+          description: "'true' to create the inventory if it doesn't already exist; anything else means false."
         groups:
           type: string
           default: ""
           description: "Comma-separated group name(s) granted access when creating a new inventory (required if creating)."
         dry_run:
           type: string
-          enum: ["true", "false"]
           default: "false"
-          description: "Transform and validate only -- do not call the platform at all."
+          description: "'true' to transform and validate only -- do not call the platform at all."
         yes:
           type: string
-          enum: ["true", "false"]
           default: "false"
           description: >-
-            Confirm the full-replace write. Without it, the service returns
+            'true' to confirm the full-replace write. Otherwise the service returns
             an added/removed/unchanged diff and action="confirmation_required"
             and makes no changes -- re-invoke with yes=true once the diff has
             been reviewed.
         include_backup:
           type: string
-          enum: ["true", "false"]
           default: "false"
-          description: "Embed the pre-replace node list in the JSON result, for rollback."
+          description: "'true' to embed the pre-replace node list in the JSON result, for rollback."
       additionalProperties: false
 
 repositories:

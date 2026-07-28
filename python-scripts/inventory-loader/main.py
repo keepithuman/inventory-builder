@@ -439,12 +439,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to a JSON file with the device list. Used for local/file-based runs.",
     )
 
+    # Booleans are plain strings, not argparse choices=["true","false"]: IAG5 passes every
+    # decorator property as a CLI flag even when the caller didn't set it, using "" rather
+    # than the schema's declared default. _bool() treats anything but "true" as false, so
+    # "", "false", and an omitted flag (default="false") all behave the same.
     p.add_argument("--inventory_name", required=True, help="Target Inventory Manager inventory name.")
     p.add_argument(
         "--create_if_missing",
-        choices=["true", "false"],
         default="false",
-        help="Create the inventory if it doesn't already exist.",
+        help="'true' to create the inventory if it doesn't already exist; anything else is 'false'.",
     )
     p.add_argument(
         "--groups",
@@ -454,24 +457,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--dry_run",
-        choices=["true", "false"],
         default="false",
-        help="Transform and validate only -- do not call the platform at all.",
+        help="'true' to transform and validate only -- do not call the platform at all.",
     )
     p.add_argument(
         "--yes",
-        choices=["true", "false"],
         default="false",
-        help="Confirm the full-replace. Without it: local interactive runs get a y/N prompt; "
-        "non-interactive callers (IAG, cron) get back a confirmation_required result instead "
-        "of writing anything.",
+        help="'true' to confirm the full-replace. Otherwise: local interactive runs get a y/N "
+        "prompt; non-interactive callers (IAG, cron) get back a confirmation_required result "
+        "instead of writing anything.",
     )
     p.add_argument(
         "--include_backup",
-        choices=["true", "false"],
         default="false",
-        help="Embed the pre-replace node list in the JSON result (in addition to --backup-to, if set). "
-        "Use for IAG/agent callers that can't read a local file back.",
+        help="'true' to embed the pre-replace node list in the JSON result (in addition to "
+        "--backup-to, if set). Use for IAG/agent callers that can't read a local file back.",
     )
     p.add_argument(
         "--backup-to",
