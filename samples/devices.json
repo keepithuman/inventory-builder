@@ -1,27 +1,17 @@
 [
   {
-    "name": "core-sw-01",
-    "primary_ip": "10.0.0.1",
-    "device_type": "Cisco Catalyst 9300",
-    "site": "DAL01",
-    "role": "core-switch",
-    "serial": "FCW1234A0BC",
-    "status": "active",
-    "tags": ["prod", "core"],
-    "itential_host": "10.0.0.1",
+    "name": "cat8k-01",
+    "tags": ["ios"],
+    "itential_host": "192.168.228.201",
     "itential_port": 22,
+    "itential_user": "$SECRET_devices/ios_cat8k $KEY_username",
+    "itential_password": "$SECRET_devices/ios_cat8k $KEY_password",
     "itential_platform": "cisco_ios",
     "itential_driver": "netmiko",
-    "itential_user": "$SECRET_devices/core_switches $KEY_username",
-    "itential_password": "$SECRET_devices/core_switches $KEY_password"
+    "netbox_id": 2
   },
   {
     "name": "core-sw-02",
-    "primary_ip": "10.0.0.2",
-    "device_type": "Arista 7280",
-    "site": "DAL01",
-    "role": "core-switch",
-    "status": "active",
     "tags": ["prod", "core"],
     "itential_host": "10.0.0.2",
     "itential_port": 22,

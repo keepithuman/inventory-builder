@@ -94,11 +94,13 @@ they pass through like anything else:
 
 **The secret-reference syntax is platform-specific — verify against a real
 node before assuming a format.** This repo's target platform uses
-`$SECRET_<vault-path> $KEY_<key>` (space-separated), confirmed by inspecting
-an existing node (`GET /inventory_manager/v1/inventories/{name}/nodes`) —
-not the dot-notation (`$SECRET.path.key`) shown as a generic example in the
-`itential-inventory` skill doc. `samples/devices.json` uses the confirmed,
-real syntax for this platform.
+`$SECRET_<vault-path> $KEY_<key>` (space-separated) — not the dot-notation
+(`$SECRET.path.key`) shown as a generic example in the `itential-inventory`
+skill doc. The `cat8k-01` record in `samples/devices.json` is not a made-up
+example — it's the exact `attributes` of a real, working node from this
+platform's `Workshop` inventory (`GET
+/inventory_manager/v1/inventories/Workshop/nodes`), confirming this
+attribute set actually resolves and connects.
 
 ## Auth
 
@@ -153,19 +155,17 @@ script actually emits a single JSON line.
   "node_count": 2,
   "nodes_preview": [
     {
-      "name": "core-sw-01",
+      "name": "cat8k-01",
       "attributes": {
-        "primary_ip": "10.0.0.1", "device_type": "Cisco Catalyst 9300", "site": "DAL01", "role": "core-switch",
-        "serial": "FCW1234A0BC", "status": "active",
-        "itential_host": "10.0.0.1", "itential_port": 22, "itential_platform": "cisco_ios", "itential_driver": "netmiko",
-        "itential_user": "$SECRET_devices/core_switches $KEY_username", "itential_password": "$SECRET_devices/core_switches $KEY_password"
+        "itential_host": "192.168.228.201", "itential_port": 22,
+        "itential_user": "$SECRET_devices/ios_cat8k $KEY_username", "itential_password": "$SECRET_devices/ios_cat8k $KEY_password",
+        "itential_platform": "cisco_ios", "itential_driver": "netmiko", "netbox_id": 2
       },
-      "tags": ["prod", "core"]
+      "tags": ["ios"]
     },
     {
       "name": "core-sw-02",
       "attributes": {
-        "primary_ip": "10.0.0.2", "device_type": "Arista 7280", "site": "DAL01", "role": "core-switch", "status": "active",
         "itential_host": "10.0.0.2", "itential_port": 22, "itential_platform": "arista_eos", "itential_driver": "netmiko",
         "itential_user": "$SECRET_devices/core_switches $KEY_username", "itential_password": "$SECRET_devices/core_switches $KEY_password"
       },
