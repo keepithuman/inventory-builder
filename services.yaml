@@ -1,0 +1,81 @@
+decorators:
+  - name: inventory-loader
+    schema:
+      $id: inventory-loader
+      $schema: https://json-schema.org/draft/202012/schema
+      type: object
+      required:
+        - devices
+        - inventory_name
+      properties:
+        devices:
+          type: string
+          description: >-
+            JSON array of device records to load, e.g.
+            [{"name":"sw1","primary_ip":"10.0.0.1","tags":["prod"]}].
+            Only "name" is required per record; every other field becomes a
+            free-form node attribute.
+        inventory_name:
+          type: string
+          description: "Target Inventory Manager inventory name."
+        create_if_missing:
+          type: string
+          enum: ["true", "false"]
+          default: "false"
+          description: "Create the inventory if it doesn't already exist."
+        groups:
+          type: string
+          default: ""
+          description: "Comma-separated group name(s) granted access when creating a new inventory (required if creating)."
+        dry_run:
+          type: string
+          enum: ["true", "false"]
+          default: "false"
+          description: "Transform and validate only -- do not call the platform at all."
+        yes:
+          type: string
+          enum: ["true", "false"]
+          default: "false"
+          description: >-
+            Confirm the full-replace write. Without it, the service returns
+            an added/removed/unchanged diff and action="confirmation_required"
+            and makes no changes -- re-invoke with yes=true once the diff has
+            been reviewed.
+        include_backup:
+          type: string
+          enum: ["true", "false"]
+          default: "false"
+          description: "Embed the pre-replace node list in the JSON result, for rollback."
+      additionalProperties: false
+
+repositories:
+  - name: inventory-builder
+    url: https://github.com/keepithuman/inventory-builder.git
+    reference: main
+
+services:
+  - name: inventory-loader
+    type: python-script
+    description: >-
+      Full-replace loads a device list into an Itential Platform Inventory
+      Manager inventory. Devices are passed inline as a JSON string (no
+      shared filesystem needed between the caller and the script).
+    filename: main.py
+    working-directory: python-scripts/inventory-loader
+    repository: inventory-builder
+    decorator: inventory-loader
+    tags:
+      - inventory
+      - itential-platform
+    secrets:
+      - name: itential-client-id
+        type: env
+        target: ITENTIAL_CLIENT_ID
+      - name: itential-client-secret
+        type: env
+        target: ITENTIAL_CLIENT_SECRET
+    runtime:
+      req-file: requirements.txt
+      env:
+        ITENTIAL_HOST: ps-training-trial-iap01.trial.itential.io
+        ITENTIAL_PORT: "443"
