@@ -75,6 +75,31 @@ free-form node attribute (`tags` is pulled out separately). See the
 script's module docstring for the full record shape and more usage
 examples.
 
+### Device vars (connection/credential attributes)
+
+Loading a device into Inventory Manager makes it *visible*; it doesn't make
+it *actionable*. To run an IAG action (`get-config`, `run-command`, etc.)
+against a loaded node, the node's `attributes` need the connection fields
+Inventory Manager/IAG actually read at execution time. These are just
+regular device-record fields — the script has no special handling for them,
+they pass through like anything else:
+
+| Field | Purpose |
+|---|---|
+| `itential_host` | device IP/hostname the action connects to |
+| `itential_port` | SSH/connection port |
+| `itential_platform` | driver platform key, e.g. `cisco_ios`, `arista_eos` |
+| `itential_driver` | connection library, e.g. `netmiko` |
+| `itential_user` / `itential_password` | credentials — a secret reference, not a raw value |
+
+**The secret-reference syntax is platform-specific — verify against a real
+node before assuming a format.** This repo's target platform uses
+`$SECRET_<vault-path> $KEY_<key>` (space-separated), confirmed by inspecting
+an existing node (`GET /inventory_manager/v1/inventories/{name}/nodes`) —
+not the dot-notation (`$SECRET.path.key`) shown as a generic example in the
+`itential-inventory` skill doc. `samples/devices.json` uses the confirmed,
+real syntax for this platform.
+
 ## Auth
 
 OAuth2 client-credentials (Itential service account) via environment
@@ -129,12 +154,21 @@ script actually emits a single JSON line.
   "nodes_preview": [
     {
       "name": "core-sw-01",
-      "attributes": { "primary_ip": "10.0.0.1", "device_type": "Cisco Catalyst 9300", "site": "DAL01", "role": "core-switch", "platform": "ios", "serial": "FCW1234A0BC", "status": "active" },
+      "attributes": {
+        "primary_ip": "10.0.0.1", "device_type": "Cisco Catalyst 9300", "site": "DAL01", "role": "core-switch",
+        "serial": "FCW1234A0BC", "status": "active",
+        "itential_host": "10.0.0.1", "itential_port": 22, "itential_platform": "cisco_ios", "itential_driver": "netmiko",
+        "itential_user": "$SECRET_devices/core_switches $KEY_username", "itential_password": "$SECRET_devices/core_switches $KEY_password"
+      },
       "tags": ["prod", "core"]
     },
     {
       "name": "core-sw-02",
-      "attributes": { "primary_ip": "10.0.0.2", "device_type": "Arista 7280", "site": "DAL01", "role": "core-switch", "platform": "eos", "status": "active" },
+      "attributes": {
+        "primary_ip": "10.0.0.2", "device_type": "Arista 7280", "site": "DAL01", "role": "core-switch", "status": "active",
+        "itential_host": "10.0.0.2", "itential_port": 22, "itential_platform": "arista_eos", "itential_driver": "netmiko",
+        "itential_user": "$SECRET_devices/core_switches $KEY_username", "itential_password": "$SECRET_devices/core_switches $KEY_password"
+      },
       "tags": ["prod", "core"]
     }
   ]

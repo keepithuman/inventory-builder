@@ -5,10 +5,15 @@
     "device_type": "Cisco Catalyst 9300",
     "site": "DAL01",
     "role": "core-switch",
-    "platform": "ios",
     "serial": "FCW1234A0BC",
     "status": "active",
-    "tags": ["prod", "core"]
+    "tags": ["prod", "core"],
+    "itential_host": "10.0.0.1",
+    "itential_port": 22,
+    "itential_platform": "cisco_ios",
+    "itential_driver": "netmiko",
+    "itential_user": "$SECRET_devices/core_switches $KEY_username",
+    "itential_password": "$SECRET_devices/core_switches $KEY_password"
   },
   {
     "name": "core-sw-02",
@@ -16,8 +21,13 @@
     "device_type": "Arista 7280",
     "site": "DAL01",
     "role": "core-switch",
-    "platform": "eos",
     "status": "active",
-    "tags": ["prod", "core"]
+    "tags": ["prod", "core"],
+    "itential_host": "10.0.0.2",
+    "itential_port": 22,
+    "itential_platform": "arista_eos",
+    "itential_driver": "netmiko",
+    "itential_user": "$SECRET_devices/core_switches $KEY_username",
+    "itential_password": "$SECRET_devices/core_switches $KEY_password"
   }
 ]
