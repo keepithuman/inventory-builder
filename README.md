@@ -5,7 +5,26 @@ A script that full-replace loads a list of devices into an Itential Platform
 callable from an Itential workflow or a FlowAI agent tool, passing the device
 list inline as JSON.
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Capabilities](#capabilities)
+- [Repository Layout](#repository-layout)
+- [Dependencies](#dependencies)
+- [Parameters](#parameters)
+  - [Options Reference](#options-reference)
+  - [Device Vars (connection/credential attributes)](#device-vars-connectioncredential-attributes)
+- [Authentication](#authentication)
+- [Usage](#usage)
+  - [Running Locally](#running-locally)
+  - [Running as an IAG5 Service](#running-as-an-iag5-service)
+  - [Calling from an Itential Workflow](#calling-from-an-itential-workflow)
+- [Sample Input & Output](#sample-input--output)
+
+## Overview
+
 Runs two ways:
+
 - **Locally**, from a JSON file, for ad-hoc or cron-scheduled syncs.
 - **As an IAG5 `python-script` service**, invoked from a workflow
   (`GatewayManager.runService`) or an agent, with no shared filesystem
@@ -13,8 +32,8 @@ Runs two ways:
 
 Only 3 inputs ever exist: `devices` (or `input`), `inventory_name`, and a
 single `options` JSON blob holding every optional toggle. This keeps the
-CLI/decorator surface fixed regardless of how many toggles the script grows —
-adding one is a script-only change, no service re-import required.
+CLI/decorator surface fixed regardless of how many toggles the script grows
+— adding one is a script-only change, no service re-import required.
 
 ## Capabilities
 
@@ -72,7 +91,7 @@ adding one is a script-only change, no service re-import required.
   backup — never a bare stack trace. Diagnostic/progress logging goes to
   stderr, so stdout is always exactly one JSON object.
 
-## Layout
+## Repository Layout
 
 ```
 services.yaml                                — IAG decorator, repository, and service definition
@@ -81,14 +100,17 @@ python-scripts/inventory-loader/platform_client.py — auth + HTTP client (stdli
 python-scripts/inventory-loader/inventory_ops.py   — Inventory Manager CRUD + session census
 python-scripts/inventory-loader/transform.py       — device record -> node schema, device-list loading
 python-scripts/inventory-loader/diff_utils.py      — diff computation, backup/diff-log file writers
-samples/devices.json                         — ready-to-use two-device input (see Samples below)
+samples/devices.json                         — ready-to-use two-device input (see Sample Input & Output)
 ```
 
-Zero third-party dependencies — `platform_client.py` implements OAuth2
-client-credentials and the HTTP calls with only the Python standard library
-(`urllib`, `ssl`, `base64`). No `pip install` step, no version pinning to
-track, and no risk of a dependency's own internals being incompatible with
-whatever Python version an IAG host happens to run.
+## Dependencies
+
+None. `platform_client.py` implements OAuth2 client-credentials and every
+HTTP call with only the Python standard library (`urllib`, `ssl`,
+`base64`), so this runs unmodified on any `python3` IAG happens to have
+installed — no `requirements.txt`, no `pip install` step on every run, and
+no version-compatibility surface between a dependency's internals and the
+host's Python version.
 
 ## Parameters
 
@@ -98,12 +120,20 @@ whatever Python version an IAG host happens to run.
 | `inventory_name` | string | yes | — |
 | `options` | string (JSON object) | no | `"{}"` (all defaults below) |
 
-`devices`: inline JSON array of device records. `input`: path to a JSON file
-(local runs only). `inventory_name`: target Inventory Manager inventory
-name.
+`devices`: inline JSON array of device records. `input`: path to a JSON
+file (local runs only). `inventory_name`: target Inventory Manager
+inventory name.
 
-**`options` keys** (all optional; values may be real JSON booleans or the
-strings `"true"`/`"false"`):
+Device records need only a `name` field; everything else becomes a
+free-form node attribute (`tags` is pulled out separately). See the
+script's module docstring for the full record shape and more usage
+examples.
+
+### Options Reference
+
+All keys are optional; values may be real JSON booleans or the strings
+`"true"`/`"false"`. An unknown key is a handled error (`success: false`),
+not a silent no-op — see [Sample Input & Output](#sample-input--output).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -118,22 +148,14 @@ strings `"true"`/`"false"`):
 | `backup_to` | string (path) | `null` | Local-only: also write the pre-replace nodes to this file. |
 | `diff_log_dir` | string (path, or `"auto"`) | `""` | Write every computed diff to its own timestamped file in this directory. `"auto"` uses a fresh tempfile-backed directory. Opt-in. |
 
-An unknown key in `options` is a handled error (`success: false`), not a
-silent no-op — see Samples below.
-
-Device records need only a `name` field; everything else becomes a
-free-form node attribute (`tags` is pulled out separately). See the
-script's module docstring for the full record shape and more usage
-examples.
-
-### Device vars (connection/credential attributes)
+### Device Vars (connection/credential attributes)
 
 Loading a device into Inventory Manager makes it *visible*; it doesn't make
 it *actionable*. To run an IAG action (`get-config`, `run-command`, etc.)
 against a loaded node, the node's `attributes` need the connection fields
 Inventory Manager/IAG actually read at execution time. These are just
-regular device-record fields — the script has no special handling for them,
-they pass through like anything else:
+regular device-record fields — the script has no special handling for
+them, they pass through like anything else:
 
 | Field | Purpose |
 |---|---|
@@ -147,13 +169,13 @@ they pass through like anything else:
 node before assuming a format.** This repo's target platform uses
 `$SECRET_<vault-path> $KEY_<key>` (space-separated) — not the dot-notation
 (`$SECRET.path.key`) shown as a generic example in the `itential-inventory`
-skill doc. The `cat8k-01` record in `samples/devices.json` is not a made-up
-example — it's the exact `attributes` of a real, working node from this
-platform's `Workshop` inventory (`GET
+skill doc. The `cat8k-01` record in `samples/devices.json` is not a
+made-up example — it's the exact `attributes` of a real, working node from
+this platform's `Workshop` inventory (`GET
 /inventory_manager/v1/inventories/Workshop/nodes`), confirming this
 attribute set actually resolves and connects.
 
-## Auth
+## Authentication
 
 OAuth2 client-credentials (Itential service account) via environment
 variables — in the IAG service these are injected from `secrets:` in
@@ -164,7 +186,28 @@ variables — in the IAG service these are injected from `secrets:` in
 | `ITENTIAL_HOST` / `ITENTIAL_PORT` | `runtime.env` in `services.yaml` |
 | `ITENTIAL_CLIENT_ID` / `ITENTIAL_CLIENT_SECRET` | IAG secrets `itential-client-id` / `itential-client-secret` |
 
-## Running as an IAG5 service
+Basic auth (`ITENTIAL_USER`/`ITENTIAL_PASSWORD`) is supported as a local
+fallback for quick testing — see `platform_client.build_platform_client()`.
+
+## Usage
+
+### Running Locally
+
+```bash
+# Dry run, from a file
+python python-scripts/inventory-loader/main.py \
+  --input devices.json \
+  --inventory_name "NetBox-Devices" \
+  --options '{"create_if_missing": true, "groups": "netbox-sync-admins", "dry_run": true}'
+
+# Real run (skips the interactive prompt)
+python python-scripts/inventory-loader/main.py \
+  --input devices.json \
+  --inventory_name "NetBox-Devices" \
+  --options '{"backup_to": "backups/netbox-devices-pre-sync.json", "yes": true}'
+```
+
+### Running as an IAG5 Service
 
 ```bash
 iagctl db import services.yaml --validate   # check first
@@ -183,11 +226,14 @@ iagctl run service python-script inventory-loader \
   --set options='{"create_if_missing": true, "groups": "netops-admins", "create_broker_actions": true, "cluster_id": "cluster-itential", "yes": true, "include_backup": true, "diff_log_dir": "auto"}'
 ```
 
-From an Itential workflow, call it with `GatewayManager.runService`
-(`serviceName: "inventory-loader"`), then extract `result.stdout` with a
-`query` task and parse it — see the `iag` skill for the full wiring pattern.
+### Calling from an Itential Workflow
 
-## Samples
+Wire a `GatewayManager.runService` task with `serviceName: "inventory-loader"`,
+then extract `result.stdout` with a `query` task and `parse` it into an
+object — see the `iag` skill for the full wiring pattern (JSON-RPC envelope
+shape, cluster ID lookup, error transitions).
+
+## Sample Input & Output
 
 `samples/devices.json` is a ready-to-use two-device input matching the
 record shape above. Output below is pretty-printed for readability — the
@@ -287,11 +333,3 @@ traceback:
 ```json
 {"success": false, "error": "Unknown options key(s): ['totally_made_up']. Valid keys: ['backup_to', 'cluster_id', 'create_broker_actions', 'create_if_missing', 'diff_log_dir', 'dry_run', 'groups', 'include_backup', 'preview', 'yes']"}
 ```
-
-## Dependencies
-
-None. `platform_client.py` implements OAuth2 client-credentials and every
-HTTP call with only the Python standard library, so this runs unmodified on
-any `python3` IAG happens to have installed — no `requirements.txt`, no
-`pip install` step on every run, and no version-compatibility surface
-between a dependency's internals and the host's Python version.
