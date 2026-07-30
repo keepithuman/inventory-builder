@@ -135,11 +135,10 @@ platform_client.build_platform_client().
 AUTH
 ----
 OAuth2 client-credentials (Itential service account) is the default and
-recommended mode -- create the service account once (see
-platform_client.create_service_account(), or do it once via an admin
-session), then supply the resulting client_id/client_secret via environment
-variables (or, under IAG, via the service's `secrets` block targeting these
-same names). Basic auth (username/password) is supported as a fallback for
+recommended mode -- create the service account once via an admin session,
+then supply the resulting client_id/client_secret via environment variables
+(or, under IAG, via the service's `secrets` block targeting these same
+names). Basic auth (username/password) is supported as a fallback for
 quick testing.
 
 Environment variables (all optional -- see platform_client.build_platform_client()):

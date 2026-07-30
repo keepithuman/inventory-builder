@@ -152,20 +152,3 @@ def build_platform_client() -> Platform:
         "No credentials found. Set ITENTIAL_CLIENT_ID/ITENTIAL_CLIENT_SECRET "
         "(preferred) or ITENTIAL_USER/ITENTIAL_PASSWORD."
     )
-
-
-def create_service_account(platform: Platform, name: str, description: str = "") -> dict:
-    """
-    One-time helper: creates a service account using an already-authenticated
-    (e.g. basic-auth admin) platform client, and returns the client_id/secret.
-    Run this once, store the output somewhere safe, then switch subsequent
-    runs to OAuth2 using build_platform_client().
-    """
-    resp = platform.post(
-        "/oauth/serviceAccounts",
-        json={"accountData": {"name": name, "description": description}},
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    log.info("Created service account '%s' (client_id=%s)", name, data.get("client_id"))
-    return data
