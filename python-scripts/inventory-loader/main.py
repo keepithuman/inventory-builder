@@ -13,6 +13,13 @@ Runs two ways:
      FlowAI agent with `devices` passed inline as a JSON string param -- see
      IAG5 CONTRACT below.
 
+Module layout (all in the same IAG `working-directory`, imported as siblings):
+  main.py            -- this file: CLI parsing, options resolution, orchestration
+  platform_client.py -- auth (build_platform_client)
+  inventory_ops.py    -- Inventory Manager CRUD + session census
+  transform.py        -- device record -> node schema, device-list loading
+  diff_utils.py        -- diff computation, backup/diff-log file writers
+
 KEY DESIGN CONSTRAINT
 ----------------------
 Inventory Manager's bulk-load endpoint (POST /inventory_manager/v1/nodes/bulk)
@@ -123,18 +130,19 @@ every run (`{"success": bool, "action": ..., ...}`) and relies on stderr
 (via `logging`) for progress/diagnostic output. Exit code is 0 for any
 handled outcome (success, validation error, confirmation required) and 1
 only for a fatal setup failure (missing platform credentials) -- see
-build_platform_client().
+platform_client.build_platform_client().
 
 AUTH
 ----
 OAuth2 client-credentials (Itential service account) is the default and
 recommended mode -- create the service account once (see
-create_service_account() below, or do it once via an admin session), then
-supply the resulting client_id/client_secret via environment variables (or,
-under IAG, via the service's `secrets` block targeting these same names).
-Basic auth (username/password) is supported as a fallback for quick testing.
+platform_client.create_service_account(), or do it once via an admin
+session), then supply the resulting client_id/client_secret via environment
+variables (or, under IAG, via the service's `secrets` block targeting these
+same names). Basic auth (username/password) is supported as a fallback for
+quick testing.
 
-Environment variables (all optional -- see build_platform_client()):
+Environment variables (all optional -- see platform_client.build_platform_client()):
   ITENTIAL_HOST            e.g. platform.example.com
   ITENTIAL_PORT             default: 443
   ITENTIAL_VERIFY_TLS       "true"/"false", default: true
@@ -145,13 +153,13 @@ Environment variables (all optional -- see build_platform_client()):
 
 Usage:
   # Local, file-based, dry run:
-  python inventory.py \\
+  python main.py \\
       --input devices.json \\
       --inventory_name "NetBox-Devices" \\
       --options '{"create_if_missing": true, "groups": "netbox-sync-admins", "dry_run": true}'
 
   # Local, file-based, real run (skips the interactive prompt):
-  python inventory.py \\
+  python main.py \\
       --input devices.json \\
       --inventory_name "NetBox-Devices" \\
       --options '{"backup_to": "backups/netbox-devices-pre-sync.json", "yes": true}'
@@ -159,13 +167,13 @@ Usage:
   # IAG5 / agent-flow style, devices passed inline as a JSON string. Only 3 flags
   # ever exist here: devices, inventory_name, and options -- IAG maps decorator
   # schema property names straight to CLI flags of the same spelling.
-  python inventory.py \\
+  python main.py \\
       --devices '[{"name":"core-sw-01","primary_ip":"10.0.0.1"}]' \\
       --inventory_name "NetBox-Devices" \\
       --options '{"create_if_missing": true, "groups": "netbox-sync-admins", "yes": true}'
 
 Device record shape (field names are whatever your extraction step
-produces -- adjust `transform_device` to match):
+produces -- adjust `transform.transform_device` to match):
 
   [
     {
@@ -190,14 +198,13 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
-import tempfile
-from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
 
-import ipsdk
+from diff_utils import backup_nodes, build_diff, diff_inventories, file_info, write_diff_log
+from inventory_ops import ensure_inventory, fetch_all_nodes, find_inventory, list_all_inventories, populate_inventory
+from platform_client import build_platform_client
+from transform import build_nodes, load_devices
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -212,383 +219,6 @@ def _bool(value) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() == "true"
-
-
-# --------------------------------------------------------------------------
-# Auth / client setup
-# --------------------------------------------------------------------------
-
-def build_platform_client():
-    """
-    Builds an ipsdk Platform client from environment variables.
-    Prefers OAuth2 client-credentials (service account) if client_id/secret
-    are present; falls back to basic auth otherwise.
-
-    Raises RuntimeError (a fatal setup failure, not a business-logic error)
-    if no usable credentials are found.
-    """
-    host = os.environ.get("ITENTIAL_HOST", "localhost")
-    port = int(os.environ.get("ITENTIAL_PORT", "0"))
-    verify = os.environ.get("ITENTIAL_VERIFY_TLS", "true").lower() != "false"
-    client_id = os.environ.get("ITENTIAL_CLIENT_ID")
-    client_secret = os.environ.get("ITENTIAL_CLIENT_SECRET")
-    user = os.environ.get("ITENTIAL_USER")
-    password = os.environ.get("ITENTIAL_PASSWORD")
-
-    if client_id and client_secret:
-        log.info("Authenticating to %s via OAuth2 client-credentials", host)
-        return ipsdk.platform_factory(
-            host=host,
-            port=port,
-            verify=verify,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-
-    if user and password:
-        log.warning(
-            "Authenticating to %s via basic auth -- switch to a service "
-            "account (ITENTIAL_CLIENT_ID/ITENTIAL_CLIENT_SECRET) for "
-            "production/scheduled runs.",
-            host,
-        )
-        return ipsdk.platform_factory(
-            host=host, port=port, verify=verify, user=user, password=password
-        )
-
-    raise RuntimeError(
-        "No credentials found. Set ITENTIAL_CLIENT_ID/ITENTIAL_CLIENT_SECRET "
-        "(preferred) or ITENTIAL_USER/ITENTIAL_PASSWORD."
-    )
-
-
-def create_service_account(platform, name: str, description: str = "") -> dict:
-    """
-    One-time helper: creates a service account using an already-authenticated
-    (e.g. basic-auth admin) platform client, and returns the client_id/secret.
-    Run this once, store the output somewhere safe, then switch subsequent
-    runs to OAuth2 using build_platform_client().
-    """
-    resp = platform.post(
-        "/oauth/serviceAccounts",
-        json={"accountData": {"name": name, "description": description}},
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    log.info("Created service account '%s' (client_id=%s)", name, data.get("client_id"))
-    return data
-
-
-# --------------------------------------------------------------------------
-# Inventory existence / creation (separate from populate -- NOT an upsert)
-# --------------------------------------------------------------------------
-
-def find_inventory(platform, name: str) -> dict | None:
-    resp = platform.get("/inventory_manager/v1/inventories", params={"names": [name]})
-    resp.raise_for_status()
-    body = resp.json()
-    results = (body.get("result") or {}).get("data", [])
-    for inv in results:
-        if inv.get("name") == name:
-            return inv
-    return None
-
-
-def create_inventory(
-    platform,
-    name: str,
-    groups: list[str],
-    description: str = "",
-    tags: list[str] | None = None,
-    create_broker_actions: bool = False,
-    cluster_id: str = "",
-) -> dict:
-    if not groups:
-        raise ValueError(
-            "At least one group is required to create an inventory "
-            "(controls RBAC access to it)."
-        )
-    if create_broker_actions and not cluster_id:
-        raise ValueError(
-            "cluster_id is required when create_broker_actions is true -- it's the "
-            "IAG cluster the four standard actions (get-config, set-config, "
-            "run-command, is-alive) will be bound to."
-        )
-    payload: dict[str, Any] = {
-        "name": name,
-        "description": description,
-        "groups": groups,
-    }
-    if tags:
-        payload["tags"] = tags
-    if create_broker_actions:
-        payload["createBrokerActions"] = True
-        payload["defaultClusterId"] = cluster_id
-
-    resp = platform.post("/inventory_manager/v1/inventories", json=payload)
-    resp.raise_for_status()
-    body = resp.json()
-    log.info(
-        "Created inventory '%s'%s",
-        name,
-        f" with broker actions on cluster '{cluster_id}'" if create_broker_actions else "",
-    )
-    return body.get("result", body)
-
-
-def ensure_inventory(
-    platform,
-    name: str,
-    create_if_missing: bool,
-    groups: list[str] | None = None,
-    create_broker_actions: bool = False,
-    cluster_id: str = "",
-) -> dict:
-    existing = find_inventory(platform, name)
-    if existing:
-        log.info("Inventory '%s' already exists -- will populate it.", name)
-        return existing
-
-    if not create_if_missing:
-        raise ValueError(
-            f"Inventory '{name}' does not exist and create_if_missing was "
-            "not set. Refusing to guess -- pass create_if_missing=true to create it."
-        )
-
-    return create_inventory(
-        platform,
-        name,
-        groups or [],
-        create_broker_actions=create_broker_actions,
-        cluster_id=cluster_id,
-    )
-
-
-# --------------------------------------------------------------------------
-# Transform: arbitrary device record -> Itential node schema
-# --------------------------------------------------------------------------
-
-def transform_device(device: dict) -> dict:
-    """
-    Maps a raw device record to the Itential node schema:
-        { "name": str, "attributes": {...}, "tags": [str] }
-
-    Adjust field mapping here to match whatever your device-sourcing step
-    (NetBox or otherwise) actually produces. `name` is the only required
-    field on the Itential side.
-    """
-    name = device.get("name")
-    if not name:
-        raise ValueError(f"Device record missing required 'name' field: {device}")
-
-    # Everything else becomes a free-form attribute bag.
-    attributes = {
-        k: v
-        for k, v in device.items()
-        if k not in ("name", "tags") and v is not None
-    }
-
-    tags = device.get("tags") or []
-
-    return {"name": name, "attributes": attributes, "tags": tags}
-
-
-def build_nodes(devices: list[dict]) -> list[dict]:
-    nodes = []
-    seen_names = set()
-    for device in devices:
-        node = transform_device(device)
-        if node["name"] in seen_names:
-            log.warning("Duplicate device name '%s' -- keeping first, skipping dup.", node["name"])
-            continue
-        seen_names.add(node["name"])
-        nodes.append(node)
-    return nodes
-
-
-def load_devices(args: argparse.Namespace) -> list:
-    if args.devices is not None:
-        devices = json.loads(args.devices)
-    else:
-        with open(args.input, "r", encoding="utf-8") as f:
-            devices = json.load(f)
-
-    if not isinstance(devices, list):
-        raise ValueError("Device input must be a JSON array of device records.")
-    return devices
-
-
-# --------------------------------------------------------------------------
-# Safety net for full-replace at scale: diff preview, backup, confirmation
-# --------------------------------------------------------------------------
-
-NODE_FETCH_PAGE_SIZE = 500
-INVENTORY_FETCH_PAGE_SIZE = 100
-DIFF_PREVIEW_LIMIT = 10
-
-
-def list_all_inventories(platform) -> list[dict]:
-    """Pages through every inventory on the platform (used for the session census, not scoped to one inventory)."""
-    all_inventories: list[dict] = []
-    page = 1
-    while True:
-        resp = platform.get(
-            "/inventory_manager/v1/inventories",
-            params={"page": page, "pageSize": INVENTORY_FETCH_PAGE_SIZE},
-        )
-        resp.raise_for_status()
-        result = resp.json().get("result") or {}
-        data = result.get("data", [])
-        all_inventories.extend(data)
-        if page >= result.get("totalPages", 1) or not data:
-            break
-        page += 1
-    return all_inventories
-
-
-def diff_inventories(before: list[dict], after: list[dict]) -> dict:
-    """Platform-wide census delta -- independent of the per-inventory node diff below."""
-    before_names = {inv["name"] for inv in before}
-    after_names = {inv["name"] for inv in after}
-    return {
-        "before_count": len(before_names),
-        "after_count": len(after_names),
-        "inventories_added": sorted(after_names - before_names),
-        "inventories_removed": sorted(before_names - after_names),
-    }
-
-
-def fetch_all_nodes(platform, inventory_identifier: str) -> list[dict]:
-    """Pages through every existing node in an inventory (may be 10k+)."""
-    all_nodes: list[dict] = []
-    page = 1
-    while True:
-        resp = platform.get(
-            f"/inventory_manager/v1/inventories/{quote(inventory_identifier, safe='')}/nodes",
-            params={"page": page, "pageSize": NODE_FETCH_PAGE_SIZE},
-        )
-        resp.raise_for_status()
-        result = resp.json().get("result") or {}
-        data = result.get("data", [])
-        all_nodes.extend(data)
-        if page >= result.get("totalPages", 1) or not data:
-            break
-        page += 1
-    return all_nodes
-
-
-def build_diff(existing_nodes: list[dict], new_nodes: list[dict]) -> dict:
-    """
-    Structured added/removed/modified/unchanged diff -- safe to embed in the JSON
-    result even at 10k+ nodes. A name present in both sets is "modified" if its
-    attributes or tags differ, "unchanged" only if they're identical -- matching
-    names alone doesn't mean nothing changed.
-    """
-    existing_by_name = {n["name"]: n for n in existing_nodes}
-    new_by_name = {n["name"]: n for n in new_nodes}
-    existing_names = set(existing_by_name)
-    new_names = set(new_by_name)
-
-    added = sorted(new_names - existing_names)
-    removed = sorted(existing_names - new_names)
-
-    modified = []
-    unchanged = []
-    for name in sorted(existing_names & new_names):
-        old_node = existing_by_name[name]
-        new_node = new_by_name[name]
-        same = (
-            (old_node.get("attributes") or {}) == (new_node.get("attributes") or {})
-            and sorted(old_node.get("tags") or []) == sorted(new_node.get("tags") or [])
-        )
-        (unchanged if same else modified).append(name)
-
-    return {
-        "existing_count": len(existing_names),
-        "new_count": len(new_names),
-        "added_count": len(added),
-        "removed_count": len(removed),
-        "modified_count": len(modified),
-        "unchanged_count": len(unchanged),
-        "added_preview": added[:DIFF_PREVIEW_LIMIT],
-        "removed_preview": removed[:DIFF_PREVIEW_LIMIT],
-        "modified_preview": modified[:DIFF_PREVIEW_LIMIT],
-    }
-
-
-def backup_nodes(nodes: list[dict], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(nodes, f, indent=2)
-    log.info("Backed up %d existing node(s) to %s", len(nodes), path)
-
-
-def file_info(path: str) -> dict:
-    """Actual on-disk size of a file this script wrote -- so growth at scale is observed, not assumed."""
-    return {"path": path, "bytes": os.path.getsize(path)}
-
-
-def write_diff_log(diff: dict, inventory_name: str, dir_path: str) -> dict:
-    """
-    Writes one timestamped diff snapshot per call, building a history across runs.
-    dir_path="auto" resolves to a fresh tempfile-backed directory -- useful under IAG,
-    where each run gets a freshly cloned working directory with no guaranteed-writable
-    path across runs.
-    """
-    if dir_path.strip().lower() == "auto":
-        dir_path = tempfile.mkdtemp(prefix="inventory-diff-")
-    else:
-        os.makedirs(dir_path, exist_ok=True)
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", inventory_name)
-    path = os.path.join(dir_path, f"diff-{safe_name}-{timestamp}.json")
-
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"inventory_name": inventory_name, "timestamp": timestamp, "diff": diff}, f, indent=2)
-    log.info("Wrote diff log to %s", path)
-    return file_info(path)
-
-
-def should_proceed(explicit_yes: bool) -> bool:
-    if explicit_yes:
-        return True
-    if not sys.stdin.isatty():
-        # No controlling terminal (IAG, cron, CI) -- never block on input().
-        return False
-    answer = input("Type 'yes' to proceed with this full-replace: ").strip().lower()
-    return answer == "yes"
-
-
-# --------------------------------------------------------------------------
-# Populate (full replace)
-# --------------------------------------------------------------------------
-
-def populate_inventory(platform, inventory_name: str, nodes: list[dict]) -> dict:
-    log.warning(
-        "Populating '%s' with %d nodes -- this REPLACES all existing nodes "
-        "in the inventory.",
-        inventory_name,
-        len(nodes),
-    )
-    resp = platform.post(
-        "/inventory_manager/v1/nodes/bulk",
-        json={"inventory_identifier": inventory_name, "nodes": nodes},
-    )
-    resp.raise_for_status()
-    body = resp.json()
-
-    stats = (body.get("result") or {}).get("statistics", {})
-    log.info(
-        "Populate result: total=%s inserted=%s skipped=%s errors=%d",
-        stats.get("total"),
-        stats.get("inserted"),
-        stats.get("skipped"),
-        len(stats.get("errors") or []),
-    )
-    for err in stats.get("errors") or []:
-        log.error("  node error: %s", err)
-
-    return stats
 
 
 # --------------------------------------------------------------------------
@@ -668,6 +298,16 @@ def resolve_options(options: dict) -> dict:
         "backup_to": options["backup_to"] or None,
         "diff_log_dir": options["diff_log_dir"] or "",
     }
+
+
+def should_proceed(explicit_yes: bool) -> bool:
+    if explicit_yes:
+        return True
+    if not sys.stdin.isatty():
+        # No controlling terminal (IAG, cron, CI) -- never block on input().
+        return False
+    answer = input("Type 'yes' to proceed with this full-replace: ").strip().lower()
+    return answer == "yes"
 
 
 def gather_diff_state(platform, inventory_name: str, nodes: list[dict]) -> tuple[bool, list[dict], dict]:
