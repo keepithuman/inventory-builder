@@ -75,11 +75,20 @@ adding one is a script-only change, no service re-import required.
 ## Layout
 
 ```
-services.yaml                              — IAG decorator, repository, and service definition
-python-scripts/inventory-loader/main.py            — the script IAG runs (and the local CLI entrypoint)
-python-scripts/inventory-loader/requirements.txt   — pip dependencies (ipsdk, pinned — see below)
-samples/devices.json                       — ready-to-use two-device input (see Samples below)
+services.yaml                                — IAG decorator, repository, and service definition
+python-scripts/inventory-loader/main.py            — CLI entrypoint IAG runs: parsing + orchestration
+python-scripts/inventory-loader/platform_client.py — auth + HTTP client (stdlib only, zero dependencies)
+python-scripts/inventory-loader/inventory_ops.py   — Inventory Manager CRUD + session census
+python-scripts/inventory-loader/transform.py       — device record -> node schema, device-list loading
+python-scripts/inventory-loader/diff_utils.py      — diff computation, backup/diff-log file writers
+samples/devices.json                         — ready-to-use two-device input (see Samples below)
 ```
+
+Zero third-party dependencies — `platform_client.py` implements OAuth2
+client-credentials and the HTTP calls with only the Python standard library
+(`urllib`, `ssl`, `base64`). No `pip install` step, no version pinning to
+track, and no risk of a dependency's own internals being incompatible with
+whatever Python version an IAG host happens to run.
 
 ## Parameters
 
@@ -279,11 +288,10 @@ traceback:
 {"success": false, "error": "Unknown options key(s): ['totally_made_up']. Valid keys: ['backup_to', 'cluster_id', 'create_broker_actions', 'create_if_missing', 'diff_log_dir', 'dry_run', 'groups', 'include_backup', 'preview', 'yes']"}
 ```
 
-## Requirements pin
+## Dependencies
 
-`requirements.txt` pins `ipsdk==0.4.0`. IAG5 `python-script` services run
-under the host's default `python3` with no documented way to select a
-different interpreter — on Python 3.9 hosts, `ipsdk>=0.5.0` fails to import
-(it uses `str | None` syntax internally without a `__future__` import,
-which only works on 3.10+). Bump this pin only after confirming the target
-IAG host's `python3 --version`.
+None. `platform_client.py` implements OAuth2 client-credentials and every
+HTTP call with only the Python standard library, so this runs unmodified on
+any `python3` IAG happens to have installed — no `requirements.txt`, no
+`pip install` step on every run, and no version-compatibility surface
+between a dependency's internals and the host's Python version.

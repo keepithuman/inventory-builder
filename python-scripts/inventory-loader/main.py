@@ -15,7 +15,7 @@ Runs two ways:
 
 Module layout (all in the same IAG `working-directory`, imported as siblings):
   main.py            -- this file: CLI parsing, options resolution, orchestration
-  platform_client.py -- auth (build_platform_client)
+  platform_client.py -- auth + HTTP client (stdlib only -- no pip dependencies)
   inventory_ops.py    -- Inventory Manager CRUD + session census
   transform.py        -- device record -> node schema, device-list loading
   diff_utils.py        -- diff computation, backup/diff-log file writers

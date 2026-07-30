@@ -65,7 +65,6 @@ services:
         type: env
         target: ITENTIAL_CLIENT_SECRET
     runtime:
-      req-file: requirements.txt
       env:
         ITENTIAL_HOST: ps-training-trial-iap01.trial.itential.io
         ITENTIAL_PORT: "443"
