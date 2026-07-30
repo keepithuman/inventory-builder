@@ -29,6 +29,28 @@ update. Practical implications:
      separate, one-time step from populating it. The script checks for the
      inventory's existence and only creates it if missing.
 
+OPTIONS BLOB
+----------------
+Only three top-level inputs ever exist: devices/input (the data), inventory_name
+(required), and options -- a single JSON object holding every optional toggle
+below. This keeps the CLI/decorator surface fixed at 3 inputs regardless of how
+many toggles this script grows; adding one is a script-only change, no service
+re-import required. Values inside `options` may be real JSON booleans (true) or
+the strings "true"/"false" -- both work.
+
+  options = {
+    "create_if_missing":     bool, default false
+    "groups":                str,  default ""      -- comma-separated
+    "create_broker_actions": bool, default false    -- requires cluster_id
+    "cluster_id":            str,  default ""
+    "dry_run":               bool, default false
+    "yes":                   bool, default false
+    "preview":               bool, default false
+    "include_backup":        bool, default false
+    "backup_to":             str,  default null     -- local file path
+    "diff_log_dir":          str,  default ""       -- path, or "auto"
+  }
+
 SAFETY AT SCALE
 ----------------
 Because every populate call replaces the entire inventory, a bad or
@@ -40,18 +62,56 @@ everything that was there before. Before writing, the script:
      Computes an added/removed/unchanged diff against the incoming set, and
      whether the run would create the inventory (would_create_inventory),
      both included in the JSON result.
-  2. Optionally backs up the current nodes to a local JSON file (--backup-to)
-     and/or embeds them in the JSON result (--include-backup true).
+  2. Optionally backs up the current nodes to a local JSON file
+     (options.backup_to) and/or embeds them in the JSON result
+     (options.include_backup).
   3. Requires explicit confirmation before creating or writing anything
-     (--yes true). Without it: interactive local runs get a y/N prompt;
+     (options.yes). Without it: interactive local runs get a y/N prompt;
      non-interactive runs (IAG, cron) get back a JSON result with
      action="confirmation_required" and the diff, and make NO changes at all
      -- not even creating the inventory -- the caller re-invokes with
-     --yes true once it has reviewed the diff.
-  4. --preview true asks for that same read-only diff explicitly, and always
-     wins over --yes true -- useful when you want a live look at actual
-     platform state (unlike --dry-run, which never touches the platform)
-     without any risk of also triggering a write in the same call.
+     yes=true once it has reviewed the diff.
+  4. options.preview asks for that same read-only diff explicitly, and
+     always wins over options.yes -- useful when you want a live look at
+     actual platform state (unlike dry_run, which never touches the
+     platform) without any risk of also triggering a write in the same call.
+
+DIFF CATEGORIES
+----------------
+The diff compares nodes by name AND by content. A name present in both the
+current and incoming sets is "modified" if its attributes or tags differ,
+"unchanged" only if they're identical -- same name alone is not enough to
+call something unchanged.
+
+SESSION CENSUS
+----------------
+Every run that authenticates (i.e. not dry_run, and past any pre-platform
+validation error) also snapshots the full platform-wide inventory list
+(count + names) once right after authenticating and again right before
+printing the final result, and reports the delta as a "session" block. This
+is independent of the per-inventory node diff above -- it catches "someone
+else created/deleted an unrelated inventory while this ran."
+
+DIFF LOG
+----------------
+options.diff_log_dir writes every computed diff to its own timestamped file
+in that directory (diff-<inventory>-<UTC-timestamp>.json), building a
+history across runs instead of only existing in that one run's JSON output.
+Pass "auto" instead of a real path to get a fresh tempfile-backed
+directory -- useful under IAG, where each run gets a freshly cloned working
+directory and no path is guaranteed to exist or be writable across runs.
+Opt-in only: omit it and nothing is written. Any file the script writes
+(backup_to or diff_log_dir) is reported back with its actual byte size, so
+growth at scale (thousands of devices) is visible rather than assumed.
+
+BROKER ACTIONS AT CREATION
+----------------
+options.create_broker_actions (with options.cluster_id) auto-provisions the
+four standard actions (get-config, set-config, run-command, is-alive) on a
+newly created inventory, bound to that IAG cluster -- same mechanism as
+`createBrokerActions`/`defaultClusterId` on the platform's create-inventory
+endpoint. Only applies when the inventory doesn't exist yet; has no effect
+otherwise.
 
 IAG5 CONTRACT
 ----------------
@@ -60,10 +120,9 @@ as a `--property_name value` CLI flag, and credentials arrive as env vars
 from the service's `secrets` block. IAG treats this script's stdout as its
 return value, so the script prints exactly one JSON object at the end of
 every run (`{"success": bool, "action": ..., ...}`) and relies on stderr
-(via `logging`) for progress/diagnostic output. Booleans are passed as the
-strings "true"/"false" since CLI flags carry no native type. Exit code is 0
-for any handled outcome (success, validation error, confirmation required)
-and 1 only for a fatal setup failure (missing platform credentials) -- see
+(via `logging`) for progress/diagnostic output. Exit code is 0 for any
+handled outcome (success, validation error, confirmation required) and 1
+only for a fatal setup failure (missing platform credentials) -- see
 build_platform_client().
 
 AUTH
@@ -89,26 +148,21 @@ Usage:
   python inventory.py \\
       --input devices.json \\
       --inventory_name "NetBox-Devices" \\
-      --create_if_missing true \\
-      --groups netbox-sync-admins \\
-      --dry_run true
+      --options '{"create_if_missing": true, "groups": "netbox-sync-admins", "dry_run": true}'
 
   # Local, file-based, real run (skips the interactive prompt):
   python inventory.py \\
       --input devices.json \\
       --inventory_name "NetBox-Devices" \\
-      --backup-to backups/netbox-devices-pre-sync.json \\
-      --yes true
+      --options '{"backup_to": "backups/netbox-devices-pre-sync.json", "yes": true}'
 
-  # IAG5 / agent-flow style, devices passed inline as a JSON string. Flag names
-  # are underscored (--inventory_name, not --inventory-name) because IAG maps
-  # decorator schema property names straight to CLI flags of the same spelling:
+  # IAG5 / agent-flow style, devices passed inline as a JSON string. Only 3 flags
+  # ever exist here: devices, inventory_name, and options -- IAG maps decorator
+  # schema property names straight to CLI flags of the same spelling.
   python inventory.py \\
       --devices '[{"name":"core-sw-01","primary_ip":"10.0.0.1"}]' \\
       --inventory_name "NetBox-Devices" \\
-      --create_if_missing true \\
-      --groups netbox-sync-admins \\
-      --yes true
+      --options '{"create_if_missing": true, "groups": "netbox-sync-admins", "yes": true}'
 
 Device record shape (field names are whatever your extraction step
 produces -- adjust `transform_device` to match):
@@ -136,7 +190,10 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
+import tempfile
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -150,7 +207,10 @@ logging.basicConfig(
 log = logging.getLogger("itential_inventory_loader")
 
 
-def _bool(value: str) -> bool:
+def _bool(value) -> bool:
+    """Accepts a real JSON bool (from the options blob) or a "true"/"false" string."""
+    if isinstance(value, bool):
+        return value
     return str(value).strip().lower() == "true"
 
 
@@ -240,11 +300,19 @@ def create_inventory(
     groups: list[str],
     description: str = "",
     tags: list[str] | None = None,
+    create_broker_actions: bool = False,
+    cluster_id: str = "",
 ) -> dict:
     if not groups:
         raise ValueError(
             "At least one group is required to create an inventory "
             "(controls RBAC access to it)."
+        )
+    if create_broker_actions and not cluster_id:
+        raise ValueError(
+            "cluster_id is required when create_broker_actions is true -- it's the "
+            "IAG cluster the four standard actions (get-config, set-config, "
+            "run-command, is-alive) will be bound to."
         )
     payload: dict[str, Any] = {
         "name": name,
@@ -253,11 +321,18 @@ def create_inventory(
     }
     if tags:
         payload["tags"] = tags
+    if create_broker_actions:
+        payload["createBrokerActions"] = True
+        payload["defaultClusterId"] = cluster_id
 
     resp = platform.post("/inventory_manager/v1/inventories", json=payload)
     resp.raise_for_status()
     body = resp.json()
-    log.info("Created inventory '%s'", name)
+    log.info(
+        "Created inventory '%s'%s",
+        name,
+        f" with broker actions on cluster '{cluster_id}'" if create_broker_actions else "",
+    )
     return body.get("result", body)
 
 
@@ -266,6 +341,8 @@ def ensure_inventory(
     name: str,
     create_if_missing: bool,
     groups: list[str] | None = None,
+    create_broker_actions: bool = False,
+    cluster_id: str = "",
 ) -> dict:
     existing = find_inventory(platform, name)
     if existing:
@@ -278,7 +355,13 @@ def ensure_inventory(
             "not set. Refusing to guess -- pass create_if_missing=true to create it."
         )
 
-    return create_inventory(platform, name, groups or [])
+    return create_inventory(
+        platform,
+        name,
+        groups or [],
+        create_broker_actions=create_broker_actions,
+        cluster_id=cluster_id,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -340,7 +423,39 @@ def load_devices(args: argparse.Namespace) -> list:
 # --------------------------------------------------------------------------
 
 NODE_FETCH_PAGE_SIZE = 500
+INVENTORY_FETCH_PAGE_SIZE = 100
 DIFF_PREVIEW_LIMIT = 10
+
+
+def list_all_inventories(platform) -> list[dict]:
+    """Pages through every inventory on the platform (used for the session census, not scoped to one inventory)."""
+    all_inventories: list[dict] = []
+    page = 1
+    while True:
+        resp = platform.get(
+            "/inventory_manager/v1/inventories",
+            params={"page": page, "pageSize": INVENTORY_FETCH_PAGE_SIZE},
+        )
+        resp.raise_for_status()
+        result = resp.json().get("result") or {}
+        data = result.get("data", [])
+        all_inventories.extend(data)
+        if page >= result.get("totalPages", 1) or not data:
+            break
+        page += 1
+    return all_inventories
+
+
+def diff_inventories(before: list[dict], after: list[dict]) -> dict:
+    """Platform-wide census delta -- independent of the per-inventory node diff below."""
+    before_names = {inv["name"] for inv in before}
+    after_names = {inv["name"] for inv in after}
+    return {
+        "before_count": len(before_names),
+        "after_count": len(after_names),
+        "inventories_added": sorted(after_names - before_names),
+        "inventories_removed": sorted(before_names - after_names),
+    }
 
 
 def fetch_all_nodes(platform, inventory_identifier: str) -> list[dict]:
@@ -363,21 +478,41 @@ def fetch_all_nodes(platform, inventory_identifier: str) -> list[dict]:
 
 
 def build_diff(existing_nodes: list[dict], new_nodes: list[dict]) -> dict:
-    """Structured added/removed/unchanged diff -- safe to embed in the JSON result even at 10k+ nodes."""
-    existing_names = {n["name"] for n in existing_nodes}
-    new_names = {n["name"] for n in new_nodes}
+    """
+    Structured added/removed/modified/unchanged diff -- safe to embed in the JSON
+    result even at 10k+ nodes. A name present in both sets is "modified" if its
+    attributes or tags differ, "unchanged" only if they're identical -- matching
+    names alone doesn't mean nothing changed.
+    """
+    existing_by_name = {n["name"]: n for n in existing_nodes}
+    new_by_name = {n["name"]: n for n in new_nodes}
+    existing_names = set(existing_by_name)
+    new_names = set(new_by_name)
+
     added = sorted(new_names - existing_names)
     removed = sorted(existing_names - new_names)
-    unchanged = existing_names & new_names
+
+    modified = []
+    unchanged = []
+    for name in sorted(existing_names & new_names):
+        old_node = existing_by_name[name]
+        new_node = new_by_name[name]
+        same = (
+            (old_node.get("attributes") or {}) == (new_node.get("attributes") or {})
+            and sorted(old_node.get("tags") or []) == sorted(new_node.get("tags") or [])
+        )
+        (unchanged if same else modified).append(name)
 
     return {
         "existing_count": len(existing_names),
         "new_count": len(new_names),
         "added_count": len(added),
         "removed_count": len(removed),
+        "modified_count": len(modified),
         "unchanged_count": len(unchanged),
         "added_preview": added[:DIFF_PREVIEW_LIMIT],
         "removed_preview": removed[:DIFF_PREVIEW_LIMIT],
+        "modified_preview": modified[:DIFF_PREVIEW_LIMIT],
     }
 
 
@@ -385,6 +520,33 @@ def backup_nodes(nodes: list[dict], path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(nodes, f, indent=2)
     log.info("Backed up %d existing node(s) to %s", len(nodes), path)
+
+
+def file_info(path: str) -> dict:
+    """Actual on-disk size of a file this script wrote -- so growth at scale is observed, not assumed."""
+    return {"path": path, "bytes": os.path.getsize(path)}
+
+
+def write_diff_log(diff: dict, inventory_name: str, dir_path: str) -> dict:
+    """
+    Writes one timestamped diff snapshot per call, building a history across runs.
+    dir_path="auto" resolves to a fresh tempfile-backed directory -- useful under IAG,
+    where each run gets a freshly cloned working directory with no guaranteed-writable
+    path across runs.
+    """
+    if dir_path.strip().lower() == "auto":
+        dir_path = tempfile.mkdtemp(prefix="inventory-diff-")
+    else:
+        os.makedirs(dir_path, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", inventory_name)
+    path = os.path.join(dir_path, f"diff-{safe_name}-{timestamp}.json")
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"inventory_name": inventory_name, "timestamp": timestamp, "diff": diff}, f, indent=2)
+    log.info("Wrote diff log to %s", path)
+    return file_info(path)
 
 
 def should_proceed(explicit_yes: bool) -> bool:
@@ -433,6 +595,35 @@ def populate_inventory(platform, inventory_name: str, nodes: list[dict]) -> dict
 # CLI
 # --------------------------------------------------------------------------
 
+DEFAULT_OPTIONS = {
+    "create_if_missing": False,
+    "groups": "",
+    "create_broker_actions": False,
+    "cluster_id": "",
+    "dry_run": False,
+    "yes": False,
+    "preview": False,
+    "include_backup": False,
+    "backup_to": None,
+    "diff_log_dir": "",
+}
+
+
+def parse_options(raw: str | None) -> dict:
+    """Parses the --options JSON blob and fills in defaults for anything omitted."""
+    options = dict(DEFAULT_OPTIONS)
+    if not raw:
+        return options
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("--options must be a JSON object.")
+    unknown = set(parsed) - set(DEFAULT_OPTIONS)
+    if unknown:
+        raise ValueError(f"Unknown options key(s): {sorted(unknown)}. Valid keys: {sorted(DEFAULT_OPTIONS)}")
+    options.update(parsed)
+    return options
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 
@@ -447,67 +638,111 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to a JSON file with the device list. Used for local/file-based runs.",
     )
 
-    # Booleans are plain strings, not argparse choices=["true","false"]: IAG5 passes every
-    # decorator property as a CLI flag even when the caller didn't set it, using "" rather
-    # than the schema's declared default. _bool() treats anything but "true" as false, so
-    # "", "false", and an omitted flag (default="false") all behave the same.
     p.add_argument("--inventory_name", required=True, help="Target Inventory Manager inventory name.")
     p.add_argument(
-        "--create_if_missing",
-        default="false",
-        help="'true' to create the inventory if it doesn't already exist; anything else is 'false'.",
-    )
-    p.add_argument(
-        "--groups",
-        default="",
-        help="Comma-separated group name(s) granted access when creating a new inventory "
-        "(required if creating).",
-    )
-    p.add_argument(
-        "--dry_run",
-        default="false",
-        help="'true' to transform and validate only -- do not call the platform at all.",
-    )
-    p.add_argument(
-        "--yes",
-        default="false",
-        help="'true' to confirm the full-replace. Otherwise: local interactive runs get a y/N "
-        "prompt; non-interactive callers (IAG, cron) get back a confirmation_required result "
-        "instead of writing anything.",
-    )
-    p.add_argument(
-        "--preview",
-        default="false",
-        help="'true' to force a live, read-only preview (diff against the actual current nodes, "
-        "plus would_create_inventory) and exit without writing -- even if yes=true is also set. "
-        "Unlike dry_run, this authenticates and reads real platform state.",
-    )
-    p.add_argument(
-        "--include_backup",
-        default="false",
-        help="'true' to embed the pre-replace node list in the JSON result (in addition to "
-        "--backup-to, if set). Use for IAG/agent callers that can't read a local file back.",
-    )
-    p.add_argument(
-        "--backup-to",
-        metavar="PATH",
-        help="Also write the inventory's current nodes to this local JSON file before replacing them "
-        "(local/file-based runs only -- not reachable by IAG/agent callers).",
+        "--options",
+        default=None,
+        help="JSON object with every optional toggle (create_if_missing, groups, "
+        "create_broker_actions, cluster_id, dry_run, yes, preview, include_backup, "
+        "backup_to, diff_log_dir) -- see the OPTIONS BLOB section of this module's "
+        "docstring for the full shape and defaults. Omit for all defaults.",
     )
     return p.parse_args(argv)
+
+
+# --------------------------------------------------------------------------
+# Orchestration helpers -- each is one phase of main(), independently testable
+# --------------------------------------------------------------------------
+
+def resolve_options(options: dict) -> dict:
+    """Converts the raw options dict (bools may be JSON bool or "true"/"false" strings) into typed values."""
+    return {
+        "create_if_missing": _bool(options["create_if_missing"]),
+        "create_broker_actions": _bool(options["create_broker_actions"]),
+        "cluster_id": options["cluster_id"] or "",
+        "groups": [g.strip() for g in (options["groups"] or "").split(",") if g.strip()],
+        "dry_run": _bool(options["dry_run"]),
+        "yes": _bool(options["yes"]),
+        "preview": _bool(options["preview"]),
+        "include_backup": _bool(options["include_backup"]),
+        "backup_to": options["backup_to"] or None,
+        "diff_log_dir": options["diff_log_dir"] or "",
+    }
+
+
+def gather_diff_state(platform, inventory_name: str, nodes: list[dict]) -> tuple[bool, list[dict], dict]:
+    """Read-only: checks existence, fetches current nodes, and computes the diff -- creates/writes nothing."""
+    existing = find_inventory(platform, inventory_name)
+    would_create_inventory = existing is None
+    existing_nodes = fetch_all_nodes(platform, inventory_name) if not would_create_inventory else []
+
+    diff = build_diff(existing_nodes, nodes)
+    log.warning(
+        "Planned change to '%s': would_create=%s existing=%d new=%d added=%d removed=%d modified=%d unchanged=%d",
+        inventory_name,
+        would_create_inventory,
+        diff["existing_count"],
+        diff["new_count"],
+        diff["added_count"],
+        diff["removed_count"],
+        diff["modified_count"],
+        diff["unchanged_count"],
+    )
+    return would_create_inventory, existing_nodes, diff
+
+
+def apply_side_channels(existing_nodes: list[dict], diff: dict, inventory_name: str, opts: dict) -> tuple[dict | None, dict | None]:
+    """Writes the optional backup file and diff-log file; returns their file_info (None if not requested)."""
+    backup_to_info = None
+    if opts["backup_to"] and existing_nodes:
+        backup_nodes(existing_nodes, opts["backup_to"])
+        backup_to_info = file_info(opts["backup_to"])
+
+    diff_log_info = None
+    if opts["diff_log_dir"]:
+        diff_log_info = write_diff_log(diff, inventory_name, opts["diff_log_dir"])
+
+    return backup_to_info, diff_log_info
+
+
+def enrich_result(
+    result: dict,
+    existing_nodes: list[dict],
+    opts: dict,
+    backup_to_info: dict | None,
+    diff_log_info: dict | None,
+    session_before: list[dict],
+    platform,
+) -> dict:
+    """Adds the optional backup/backup_to_file/diff_log/session fields shared by both result shapes below."""
+    if opts["include_backup"] and existing_nodes:
+        result["backup"] = existing_nodes
+    if backup_to_info:
+        result["backup_to_file"] = backup_to_info
+    if diff_log_info:
+        result["diff_log"] = diff_log_info
+    result["session"] = diff_inventories(session_before, list_all_inventories(platform))
+    return result
+
+
+def perform_write(platform, inventory_name: str, nodes: list[dict], opts: dict) -> dict:
+    """Creates the inventory if needed and populates it. Raises ValueError on a handled validation failure."""
+    ensure_inventory(
+        platform,
+        inventory_name,
+        create_if_missing=opts["create_if_missing"],
+        groups=opts["groups"],
+        create_broker_actions=opts["create_broker_actions"],
+        cluster_id=opts["cluster_id"],
+    )
+    return populate_inventory(platform, inventory_name, nodes)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
-    create_if_missing = _bool(args.create_if_missing)
-    dry_run = _bool(args.dry_run)
-    confirmed = _bool(args.yes)
-    explicit_preview = _bool(args.preview)
-    include_backup = _bool(args.include_backup)
-    groups = [g.strip() for g in args.groups.split(",") if g.strip()]
-
     try:
+        opts = resolve_options(parse_options(args.options))
         devices = load_devices(args)
         nodes = build_nodes(devices)
     except (ValueError, OSError, json.JSONDecodeError) as e:
@@ -516,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("Prepared %d nodes from %d input device records.", len(nodes), len(devices))
 
-    if dry_run:
+    if opts["dry_run"]:
         print(json.dumps({
             "success": True,
             "action": "dry_run",
@@ -531,56 +766,34 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"success": False, "error": str(e)}))
         return 1
 
-    # Read-only: check existence and fetch current nodes, but never create or write
-    # anything yet. Whether the inventory would need to be created is itself part of
-    # what gets previewed/confirmed below.
-    existing = find_inventory(platform, args.inventory_name)
-    would_create_inventory = existing is None
-    existing_nodes = fetch_all_nodes(platform, args.inventory_name) if not would_create_inventory else []
+    # Session census: platform-wide inventory count/names, snapshotted once now and
+    # again right before printing the final result -- independent of the per-inventory
+    # node diff below. Cheap: inventory counts are small even when node counts aren't.
+    session_before = list_all_inventories(platform)
 
-    diff = build_diff(existing_nodes, nodes)
-    log.warning(
-        "Planned change to '%s': would_create=%s existing=%d new=%d added=%d removed=%d unchanged=%d",
-        args.inventory_name,
-        would_create_inventory,
-        diff["existing_count"],
-        diff["new_count"],
-        diff["added_count"],
-        diff["removed_count"],
-        diff["unchanged_count"],
-    )
-
-    if args.backup_to and existing_nodes:
-        backup_nodes(existing_nodes, args.backup_to)
+    would_create_inventory, existing_nodes, diff = gather_diff_state(platform, args.inventory_name, nodes)
+    backup_to_info, diff_log_info = apply_side_channels(existing_nodes, diff, args.inventory_name, opts)
 
     # preview=true always wins, even if yes=true was also passed: it's an explicit
     # "show me, don't touch anything" request, not just a missing confirmation.
-    proceed = (not explicit_preview) and should_proceed(confirmed)
+    proceed = (not opts["preview"]) and should_proceed(opts["yes"])
 
     if not proceed:
         result: dict[str, Any] = {
             "success": False,
-            "action": "preview" if explicit_preview else "confirmation_required",
+            "action": "preview" if opts["preview"] else "confirmation_required",
             "would_create_inventory": would_create_inventory,
             "diff": diff,
         }
-        if include_backup and existing_nodes:
-            result["backup"] = existing_nodes
+        result = enrich_result(result, existing_nodes, opts, backup_to_info, diff_log_info, session_before, platform)
         print(json.dumps(result))
         return 0
 
     try:
-        ensure_inventory(
-            platform,
-            args.inventory_name,
-            create_if_missing=create_if_missing,
-            groups=groups,
-        )
+        stats = perform_write(platform, args.inventory_name, nodes, opts)
     except ValueError as e:
         print(json.dumps({"success": False, "error": str(e)}))
         return 0
-
-    stats = populate_inventory(platform, args.inventory_name, nodes)
 
     result = {
         "success": not bool(stats.get("errors")),
@@ -590,8 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         "diff": diff,
         "populate": stats,
     }
-    if include_backup and existing_nodes:
-        result["backup"] = existing_nodes
+    result = enrich_result(result, existing_nodes, opts, backup_to_info, diff_log_info, session_before, platform)
     print(json.dumps(result))
     return 0
 

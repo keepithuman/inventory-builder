@@ -11,41 +11,66 @@ Runs two ways:
   (`GatewayManager.runService`) or an agent, with no shared filesystem
   required between the caller and the script.
 
+Only 3 inputs ever exist: `devices` (or `input`), `inventory_name`, and a
+single `options` JSON blob holding every optional toggle. This keeps the
+CLI/decorator surface fixed regardless of how many toggles the script grows —
+adding one is a script-only change, no service re-import required.
+
 ## Capabilities
 
 - **Full inventory sync** — creates the target inventory if it doesn't exist
-  (`create_if_missing`), then loads every device record as a node
+  (`options.create_if_missing`), then loads every device record as a node
   (`{name, attributes, tags}`), deduplicating by name.
-- **Dry run** (`dry_run=true`) — transforms and validates the input locally
-  without contacting the platform at all. Good for checking a device export
-  before it touches anything live.
-- **Diff preview before every write** — fetches the inventory's current
-  nodes (paginated, so it scales past 10k+ devices) and computes an
-  added/removed/unchanged summary against the incoming set. Always included
-  in the JSON result, since the underlying API call is a **full replace, not
-  an upsert** — every write clears the inventory first.
-- **Confirmation gate** (`yes`) — without it, the script returns the diff and
-  makes **zero** changes — it doesn't populate, and it doesn't even create the
-  inventory if `create_if_missing=true` was also set (`action:
-  "confirmation_required"`, plus `would_create_inventory`). Local interactive
-  runs get a y/N prompt instead; non-interactive callers (IAG, cron) always
-  get the structured refusal, never a hang. This is the main guard against a
-  bad or truncated input silently wiping a live inventory.
-- **Live preview** (`preview=true`) — the same read-only diff as above
-  (existing nodes, added/removed/unchanged, `would_create_inventory`), but
-  requested explicitly rather than implied by a missing `yes`, and it always
-  wins even if `yes=true` is also passed. Unlike `dry_run`, this authenticates
-  and reads the actual current platform state.
-- **Rollback backup** (`backup_to` / `include_backup`) — snapshots the
-  inventory's pre-replace nodes to a local file and/or embeds them directly
-  in the JSON result, so a bad run can be undone.
+- **Dry run** (`options.dry_run`) — transforms and validates the input
+  locally without contacting the platform at all. Good for checking a device
+  export before it touches anything live.
+- **Content-aware diff preview before every write** — fetches the
+  inventory's current nodes (paginated, so it scales past 10k+ devices) and
+  categorizes each name in the incoming set as `added`, `removed`,
+  `modified` (same name, different attributes or tags), or `unchanged`
+  (same name AND identical content). Always included in the JSON result,
+  since the underlying API call is a **full replace, not an upsert** —
+  every write clears the inventory first.
+- **Confirmation gate** (`options.yes`) — without it, the script returns the
+  diff and makes **zero** changes — it doesn't populate, and it doesn't even
+  create the inventory if `create_if_missing=true` was also set (`action:
+  "confirmation_required"`, plus `would_create_inventory`). Local
+  interactive runs get a y/N prompt instead; non-interactive callers (IAG,
+  cron) always get the structured refusal, never a hang. This is the main
+  guard against a bad or truncated input silently wiping a live inventory.
+- **Live preview** (`options.preview`) — the same read-only diff as above,
+  but requested explicitly rather than implied by a missing `yes`, and it
+  always wins even if `yes=true` is also passed. Unlike `dry_run`, this
+  authenticates and reads the actual current platform state.
+- **Rollback backup** (`options.backup_to` / `options.include_backup`) —
+  snapshots the inventory's pre-replace nodes to a local file and/or embeds
+  them directly in the JSON result, so a bad run can be undone.
+- **Timestamped diff audit trail** (`options.diff_log_dir`) — writes every
+  computed diff to its own timestamped file in that directory, building a
+  history across runs instead of only existing in one run's JSON output.
+  Pass `"auto"` for a fresh tempfile-backed directory — safe under IAG,
+  where each run gets a freshly cloned working directory. Opt-in; omit for
+  no file.
+- **File-size visibility** — any file the script writes (`backup_to`,
+  `diff_log_dir`) is reported back with its actual byte size (`bytes`), so
+  growth at scale (thousands of devices) is observed, not assumed.
+- **Session census** — snapshots the full platform-wide inventory list
+  (count + names) right after authenticating and again right before
+  printing the final result, reporting the delta as a `session` block.
+  Independent of the per-inventory node diff — catches "something else on
+  the platform changed while this ran."
+- **Broker actions at creation** (`options.create_broker_actions` +
+  `options.cluster_id`) — auto-provisions the four standard actions
+  (`get-config`, `set-config`, `run-command`, `is-alive`) on a newly created
+  inventory, bound to the given IAG cluster. Only applies when the
+  inventory doesn't exist yet.
 - **Two input paths** — `devices` (a JSON string, for IAG/agent/workflow
   callers) or `input` (a file path, for local runs).
 - **Structured JSON result on every run** — `success`, `action`
-  (`dry_run` / `confirmation_required` / `populated`), the diff, populate
-  statistics (`inserted`/`skipped`/`errors`), and optional backup — never a
-  bare stack trace. Diagnostic/progress logging goes to stderr, so stdout is
-  always exactly one JSON object.
+  (`dry_run` / `confirmation_required` / `preview` / `populated`), the
+  diff, populate statistics (`inserted`/`skipped`/`errors`), and optional
+  backup — never a bare stack trace. Diagnostic/progress logging goes to
+  stderr, so stdout is always exactly one JSON object.
 
 ## Layout
 
@@ -58,17 +83,34 @@ samples/devices.json                       — ready-to-use two-device input (se
 
 ## Parameters
 
-| Name | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `devices` / `input` | string | one of the two | — | `devices`: inline JSON array of device records. `input`: path to a JSON file (local runs only). |
-| `inventory_name` | string | yes | — | Target Inventory Manager inventory name. |
-| `create_if_missing` | string (`"true"`/anything else) | no | `"false"` | Create the inventory if it doesn't exist. |
-| `groups` | string | no | `""` | Comma-separated group name(s) granted access when creating a new inventory (required if creating). |
-| `dry_run` | string (`"true"`/anything else) | no | `"false"` | Transform and validate only — no platform calls at all. |
-| `yes` | string (`"true"`/anything else) | no | `"false"` | Confirm the write. Without it, nothing changes — not even inventory creation. |
-| `preview` | string (`"true"`/anything else) | no | `"false"` | Force the live read-only diff and exit without writing. Always wins over `yes=true`. |
-| `include_backup` | string (`"true"`/anything else) | no | `"false"` | Embed the pre-replace node list in the JSON result. |
-| `backup_to` | string (path) | no | — | Local-only: also write the pre-replace nodes to this file. |
+| Name | Type | Required | Default |
+|---|---|---|---|
+| `devices` / `input` | string | one of the two | — |
+| `inventory_name` | string | yes | — |
+| `options` | string (JSON object) | no | `"{}"` (all defaults below) |
+
+`devices`: inline JSON array of device records. `input`: path to a JSON file
+(local runs only). `inventory_name`: target Inventory Manager inventory
+name.
+
+**`options` keys** (all optional; values may be real JSON booleans or the
+strings `"true"`/`"false"`):
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `create_if_missing` | bool | `false` | Create the inventory if it doesn't exist. |
+| `groups` | string | `""` | Comma-separated group name(s) granted access when creating a new inventory (required if creating). |
+| `create_broker_actions` | bool | `false` | Auto-provision the four standard actions on a newly created inventory. Requires `cluster_id`. No effect if the inventory already exists. |
+| `cluster_id` | string | `""` | IAG cluster the broker actions are bound to. Required if `create_broker_actions=true`. |
+| `dry_run` | bool | `false` | Transform and validate only — no platform calls at all. |
+| `yes` | bool | `false` | Confirm the write. Without it, nothing changes — not even inventory creation. |
+| `preview` | bool | `false` | Force the live read-only diff and exit without writing. Always wins over `yes=true`. |
+| `include_backup` | bool | `false` | Embed the pre-replace node list in the JSON result. |
+| `backup_to` | string (path) | `null` | Local-only: also write the pre-replace nodes to this file. |
+| `diff_log_dir` | string (path, or `"auto"`) | `""` | Write every computed diff to its own timestamped file in this directory. `"auto"` uses a fresh tempfile-backed directory. Opt-in. |
+
+An unknown key in `options` is a handled error (`success: false`), not a
+silent no-op — see Samples below.
 
 Device records need only a `name` field; everything else becomes a
 free-form node attribute (`tags` is pulled out separately). See the
@@ -123,16 +165,13 @@ iagctl db import services.yaml              # then import
 iagctl run service python-script inventory-loader \
   --set devices='[{"name":"core-sw-01","primary_ip":"10.0.0.1"}]' \
   --set inventory_name=NetBox-Devices \
-  --set dry_run=true
+  --set options='{"dry_run": true}'
 
-# Real load, with rollback backup embedded in the result
+# Real load: create with broker actions, confirm the write, keep a diff audit trail
 iagctl run service python-script inventory-loader \
   --set devices='[{"name":"core-sw-01","primary_ip":"10.0.0.1"}]' \
   --set inventory_name=NetBox-Devices \
-  --set create_if_missing=true \
-  --set groups=netops-admins \
-  --set yes=true \
-  --set include_backup=true
+  --set options='{"create_if_missing": true, "groups": "netops-admins", "create_broker_actions": true, "cluster_id": "cluster-itential", "yes": true, "include_backup": true, "diff_log_dir": "auto"}'
 ```
 
 From an Itential workflow, call it with `GatewayManager.runService`
@@ -143,10 +182,10 @@ From an Itential workflow, call it with `GatewayManager.runService`
 
 `samples/devices.json` is a ready-to-use two-device input matching the
 record shape above. Output below is pretty-printed for readability — the
-script actually emits a single JSON line.
+script actually emits a single JSON line. All captured from real runs
+against a live platform, not invented.
 
-**Dry run** — `--set devices=@samples/devices.json --set dry_run=true` (or
-`--input samples/devices.json --dry_run true` locally):
+**Dry run** — `--options '{"dry_run": true}'`:
 
 ```json
 {
@@ -175,8 +214,10 @@ script actually emits a single JSON line.
 }
 ```
 
-**Real run without `yes`** — the confirmation gate stops the write (and any
-inventory creation) and reports what *would* happen:
+**No `options` at all** — defaults to a confirmation-gated, content-aware
+diff against `Test-Inventory`'s actual nodes (one record matched exactly —
+`unchanged`; one had a different attribute set — `modified`), plus the
+session census:
 
 ```json
 {
@@ -184,59 +225,41 @@ inventory creation) and reports what *would* happen:
   "action": "confirmation_required",
   "would_create_inventory": false,
   "diff": {
-    "existing_count": 2,
-    "new_count": 2,
-    "added_count": 1,
-    "removed_count": 1,
-    "unchanged_count": 1,
-    "added_preview": ["new-sw-03"],
-    "removed_preview": ["core-sw-02"]
-  }
+    "existing_count": 2, "new_count": 2,
+    "added_count": 0, "removed_count": 0,
+    "modified_count": 1, "unchanged_count": 1,
+    "added_preview": [], "removed_preview": [], "modified_preview": ["core-sw-01"]
+  },
+  "session": { "before_count": 3, "after_count": 3, "inventories_added": [], "inventories_removed": [] }
 }
 ```
 
-**`preview=true` against an inventory that doesn't exist yet** — same
-read-only shape, `action` distinguishes an explicit ask from an implied one:
+**`--options '{"preview": true, "yes": true}'`** — `preview` always wins,
+even with `yes` also set:
 
 ```json
 {
   "success": false,
   "action": "preview",
-  "would_create_inventory": true,
-  "diff": {
-    "existing_count": 0,
-    "new_count": 1,
-    "added_count": 1,
-    "removed_count": 0,
-    "unchanged_count": 0,
-    "added_preview": ["ghost-sw"],
-    "removed_preview": []
-  }
+  "would_create_inventory": false,
+  "diff": { "existing_count": 2, "new_count": 2, "added_count": 0, "removed_count": 0, "modified_count": 1, "unchanged_count": 1, "added_preview": [], "removed_preview": [], "modified_preview": ["core-sw-01"] },
+  "session": { "before_count": 3, "after_count": 3, "inventories_added": [], "inventories_removed": [] }
 }
 ```
 
-**Real run with `yes=true` and `include_backup=true`**:
+**Real run** — `--options '{"create_if_missing": true, "groups": "admins", "create_broker_actions": true, "cluster_id": "cluster-itential", "yes": true, "diff_log_dir": "auto"}'`
+against a brand-new inventory name:
 
 ```json
 {
   "success": true,
   "action": "populated",
-  "inventory_name": "Test-Inventory",
-  "created_inventory": false,
-  "diff": {
-    "existing_count": 2,
-    "new_count": 2,
-    "added_count": 1,
-    "removed_count": 1,
-    "unchanged_count": 1,
-    "added_preview": ["new-sw-03"],
-    "removed_preview": ["core-sw-02"]
-  },
-  "populate": { "total": 2, "inserted": 2, "skipped": 0, "errors": [] },
-  "backup": [
-    { "_id": "...", "inventory_id": "...", "name": "core-sw-01", "attributes": { "...": "..." }, "tags": ["prod", "core"] },
-    { "_id": "...", "inventory_id": "...", "name": "core-sw-02", "attributes": { "...": "..." }, "tags": ["prod", "core"] }
-  ]
+  "inventory_name": "Options-Test-Inv-XYZ",
+  "created_inventory": true,
+  "diff": { "existing_count": 0, "new_count": 1, "added_count": 1, "removed_count": 0, "modified_count": 0, "unchanged_count": 0, "added_preview": ["ghost"], "removed_preview": [], "modified_preview": [] },
+  "populate": { "total": 1, "inserted": 1, "skipped": 0, "errors": [] },
+  "diff_log": { "path": "/tmp/inventory-diff-d74p9ia1/diff-Options-Test-Inv-XYZ-20260730T174049Z.json", "bytes": 338 },
+  "session": { "before_count": 3, "after_count": 4, "inventories_added": ["Options-Test-Inv-XYZ"], "inventories_removed": [] }
 }
 ```
 
@@ -248,6 +271,12 @@ traceback:
 ```
 ```json
 {"success": false, "error": "Inventory 'Does-Not-Exist' does not exist and create_if_missing was not set. Refusing to guess -- pass create_if_missing=true to create it."}
+```
+```json
+{"success": false, "error": "cluster_id is required when create_broker_actions is true -- it's the IAG cluster the four standard actions (get-config, set-config, run-command, is-alive) will be bound to."}
+```
+```json
+{"success": false, "error": "Unknown options key(s): ['totally_made_up']. Valid keys: ['backup_to', 'cluster_id', 'create_broker_actions', 'create_if_missing', 'diff_log_dir', 'dry_run', 'groups', 'include_backup', 'preview', 'yes']"}
 ```
 
 ## Requirements pin

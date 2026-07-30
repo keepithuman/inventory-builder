@@ -18,38 +18,24 @@ decorators:
         inventory_name:
           type: string
           description: "Target Inventory Manager inventory name."
-        create_if_missing:
+        options:
           type: string
-          default: "false"
-          description: "'true' to create the inventory if it doesn't already exist; anything else means false."
-        groups:
-          type: string
-          default: ""
-          description: "Comma-separated group name(s) granted access when creating a new inventory (required if creating)."
-        dry_run:
-          type: string
-          default: "false"
-          description: "'true' to transform and validate only -- do not call the platform at all."
-        yes:
-          type: string
-          default: "false"
+          default: "{}"
           description: >-
-            'true' to confirm the write (including creating the inventory, if
-            needed). Otherwise the service returns a read-only diff against the
-            actual current nodes plus would_create_inventory, action=
-            "confirmation_required", and makes NO changes at all -- re-invoke
-            with yes=true once the diff has been reviewed.
-        preview:
-          type: string
-          default: "false"
-          description: >-
-            'true' to force that same live, read-only diff and exit without
-            writing -- always wins over yes=true. Unlike dry_run (which never
-            contacts the platform), this authenticates and reads real state.
-        include_backup:
-          type: string
-          default: "false"
-          description: "'true' to embed the pre-replace node list in the JSON result, for rollback."
+            JSON object with every optional toggle, e.g.
+            {"create_if_missing": true, "groups": "admins",
+            "create_broker_actions": true, "cluster_id": "cluster-itential",
+            "yes": true, "include_backup": true, "diff_log_dir": "auto"}.
+            Keys: create_if_missing (bool, default false), groups (comma-separated
+            string, default ""), create_broker_actions (bool, default false --
+            requires cluster_id), cluster_id (string, default ""), dry_run (bool,
+            default false -- no platform calls at all), yes (bool, default false --
+            confirms the write; without it nothing changes, not even inventory
+            creation), preview (bool, default false -- live read-only diff, always
+            wins over yes), include_backup (bool, default false -- embeds the
+            pre-replace nodes in the result), backup_to (string path, default null,
+            local-only), diff_log_dir (string path or "auto", default "" -- opt-in
+            timestamped diff audit trail). Omit entirely for all defaults.
       additionalProperties: false
 
 repositories:
